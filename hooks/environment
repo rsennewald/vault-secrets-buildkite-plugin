@@ -88,6 +88,98 @@ dumpEnvSecrets() {
   fi
 }
 
+processExplicitSecrets() {
+  local vault_server="$1"
+
+  local idx=0
+  while true; do
+    local string_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}"
+    local path_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_PATH"
+    local secret_path=""
+
+    local path_exists="${!path_var+set}"
+    local string_exists="${!string_var+set}"
+
+    if [[ "$path_exists" == "set" ]]; then
+      secret_path="${!path_var:-}"
+    elif [[ "$string_exists" == "set" ]]; then
+      secret_path="${!string_var:-}"
+    else
+      break
+    fi
+
+    if [[ -z "$secret_path" ]]; then
+      echo "+++ Secret at index $idx has an empty path" >&2
+      exit 1
+    fi
+
+    local field_name_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_0_NAME"
+
+    local fields_prefix="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_"
+    local fields_count
+    fields_count=$(env | grep -c "^${fields_prefix}" || true)
+    if [[ "$fields_count" -gt 0 && -z "${!field_name_var:-}" ]]; then
+      echo "+++ Secret $secret_path has 'fields' but entries are missing required 'name' property" >&2
+      exit 1
+    fi
+
+    if [[ -n "${!field_name_var:-}" ]]; then
+      echo "Fetching secret(s) (field-mapped): ${secret_path}" >&2
+      local secret_json
+      local vault_err
+      vault_err=$(mktemp "${TMPDIR}/vault-err.XXXXXX")
+      if ! secret_json=$(vault kv get -address="$vault_server" -field=data -format=json "$secret_path" 2>"$vault_err"); then
+        echo "+++ Failed to fetch secret from $secret_path" >&2
+        cat "$vault_err" >&2 || true
+        rm -f "$vault_err"
+        exit 1
+      fi
+      rm -f "$vault_err"
+
+      local fidx=0
+      local fname_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_${fidx}_NAME"
+      while [[ -n "${!fname_var:-}" ]]; do
+        local field_name="${!fname_var}"
+        local env_var_name_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_${fidx}_ENV"
+        local env_var_name="${!env_var_name_var:-}"
+
+        if [[ -z "$field_name" ]]; then
+          echo "+++ Secret $secret_path has a field with empty 'name' at index $fidx" >&2
+          exit 1
+        fi
+
+        if [[ -z "$env_var_name" ]]; then
+          echo "+++ Field '$field_name' in secret $secret_path is missing required 'env'" >&2
+          exit 1
+        fi
+
+        if [[ ! "$env_var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          echo "+++ Field '$field_name' in secret $secret_path has invalid env var name '$env_var_name' (must match [A-Za-z_][A-Za-z0-9_]*)" >&2
+          exit 1
+        fi
+
+        local field_value
+        field_value=$(jq -r --arg key "$field_name" '.[$key] // empty' <<< "$secret_json")
+        if [[ -z "$field_value" ]]; then
+          echo "+++ Field '$field_name' not found in secret at $secret_path" >&2
+          exit 1
+        fi
+
+        export "${env_var_name}=${field_value}"
+        echo "Exported field '$field_name' as ${env_var_name}" >&2
+
+        fidx=$((fidx + 1))
+        fname_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_${fidx}_NAME"
+      done
+    else
+      echo "Fetching secret (dump-all): ${secret_path}" >&2
+      processEnvSecrets "$vault_server" "$secret_path"
+    fi
+
+    idx=$((idx + 1))
+  done
+}
+
 _source="${BASH_SOURCE[0]}"
 [ -z "${_source:-}" ] && _source="${0}"
 basedir="$( cd "$( dirname "${_source}" )" && cd .. && pwd )"
@@ -242,5 +334,7 @@ if [[ -n "$vault_server" ]] ; then
   done
 
   dumpEnvSecrets
+
+  processExplicitSecrets "$vault_server"
 
 fi

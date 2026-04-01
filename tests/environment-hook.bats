@@ -649,3 +649,211 @@ setup() {
 
   unstub vault
 }
+
+#-------
+# Explicit secrets list (Phase 1: field mapping)
+
+@test "Secrets string format dumps all fields (backward compat)" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0="secret/ci/team/db-creds"
+  export TESTDATA='DB_USER: admin'
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml secret/ci/team/db-creds : echo '${TESTDATA}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Fetching secret (dump-all)"
+  assert_output --partial "Evaluating"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping mode exports specific fields with custom env names" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_NAME="username"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_ENV="DATABASE_USER"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\",\"username\":\"admin\",\"host\":\"db.example.com\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Exported field 'password' as DATABASE_PASSWORD"
+  assert_output --partial "Exported field 'username' as DATABASE_USER"
+  refute_output --partial "host"
+
+  unstub vault
+}
+
+@test "Secrets string format supports multiple secrets" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0="secret/ci/team/db-creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1="secret/ci/team/api-keys"
+  export TESTDATA_DB='DB_USER: admin'
+  export TESTDATA_API='API_KEY: abc123'
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml secret/ci/team/db-creds : echo '${TESTDATA_DB}'" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml secret/ci/team/api-keys : echo '${TESTDATA_API}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Fetching secret (dump-all): secret/ci/team/db-creds"
+  assert_output --partial "Fetching secret (dump-all): secret/ci/team/api-keys"
+
+  unstub vault
+}
+
+@test "Explicit secrets work alongside auto-discovery" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/db-creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DB_PASSWORD"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : echo 'env'" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml data/buildkite/env : echo 'MY_SECRET: fooblah'" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/db-creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "MY_SECRET=fooblah"
+  assert_output --partial "Exported field 'password' as DB_PASSWORD"
+
+  unstub vault
+}
+
+@test "Secrets mixed format: string dump-all and object field-mapped in same list" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0="secret/ci/team/env-creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_PATH="secret/ci/team/db-creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_ENV="DB_PASSWORD"
+  export TESTDATA='API_KEY: abc123'
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml secret/ci/team/env-creds : echo '${TESTDATA}'" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/db-creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Fetching secret (dump-all): secret/ci/team/env-creds"
+  assert_output --partial "Exported field 'password' as DB_PASSWORD"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping fails when env is missing" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="host"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"host\":\"db.example.com\"}'"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "missing required 'env'"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping fails with malformed fields (missing name property)" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_FOO="bar"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "missing required 'name' property"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping fails with invalid env var name" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="MY-BAD-VAR"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "invalid env var name"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping fails when field not found in secret" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="nonexistent"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="SOME_VAR"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "Field 'nonexistent' not found in secret"
+
+  unstub vault
+}
+
+@test "Secrets field-mapping fails when vault fetch fails" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/bad-path"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/bad-path : exit 1"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "Failed to fetch secret from secret/ci/team/bad-path"
+
+  unstub vault
+}
+
+@test "Secrets fails with empty path" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH=""
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "empty path"
+
+  unstub vault
+}
