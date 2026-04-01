@@ -165,8 +165,30 @@ processExplicitSecrets() {
           exit 1
         fi
 
-        export "${env_var_name}=${field_value}"
-        echo "Exported field '$field_name' as ${env_var_name}" >&2
+        local type_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_${fidx}_TYPE"
+        local field_type="${!type_var:-env}"
+
+        if [[ "$field_type" == "file" ]]; then
+          if [[ -z "${SECRET_TMPDIR:-}" ]]; then
+            local old_umask
+            old_umask=$(umask)
+            umask 077
+            SECRET_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/buildkite-secrets-XXXXXX")
+            umask "$old_umask"
+            export SECRET_TMPDIR
+          fi
+          local dest="$SECRET_TMPDIR/${env_var_name}"
+          install -m 600 /dev/null "$dest"
+          printf '%s' "$field_value" > "$dest"
+          export "${env_var_name}=${dest}"
+          echo "Wrote field '$field_name' to file, exported ${env_var_name}" >&2
+        elif [[ "$field_type" == "env" ]]; then
+          export "${env_var_name}=${field_value}"
+          echo "Exported field '$field_name' as ${env_var_name}" >&2
+        else
+          echo "+++ Field '$field_name' in secret $secret_path has invalid type '$field_type' (must be 'env' or 'file')" >&2
+          exit 1
+        fi
 
         fidx=$((fidx + 1))
         fname_var="BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_${idx}_FIELDS_${fidx}_NAME"

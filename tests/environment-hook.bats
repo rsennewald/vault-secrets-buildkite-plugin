@@ -857,3 +857,166 @@ setup() {
 
   unstub vault
 }
+
+#-------
+# File-based secret delivery (Phase 4: type: file)
+
+@test "Secrets file mode writes to temp file and sets env var to path" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/gcp-sa"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="json"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="GOOGLE_APPLICATION_CREDENTIALS"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_TYPE="file"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/gcp-sa : echo '{\"json\":\"{\\\"type\\\":\\\"service_account\\\"}\"}'  "
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Wrote field 'json' to file, exported GOOGLE_APPLICATION_CREDENTIALS"
+
+  unstub vault
+}
+
+@test "Secrets mix of env and file types in same secret" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_NAME="ca_bundle"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_ENV="DATABASE_CA_FILE"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_TYPE="file"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\",\"ca_bundle\":\"-----BEGIN CERT-----\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Exported field 'password' as DATABASE_PASSWORD"
+  assert_output --partial "Wrote field 'ca_bundle' to file, exported DATABASE_CA_FILE"
+
+  unstub vault
+}
+
+@test "Secrets file mode with multiple files from different secrets" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/tls"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="cert"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="TLS_CERT_FILE"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_TYPE="file"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_NAME="key"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_ENV="TLS_KEY_FILE"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_1_TYPE="file"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_PATH="secret/ci/team/gcp"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_NAME="sa_key"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_ENV="GCP_SA_KEY_FILE"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_TYPE="file"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/tls : echo '{\"cert\":\"CERT_DATA\",\"key\":\"KEY_DATA\"}'" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/gcp : echo '{\"sa_key\":\"GCP_DATA\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Wrote field 'cert' to file, exported TLS_CERT_FILE"
+  assert_output --partial "Wrote field 'key' to file, exported TLS_KEY_FILE"
+  assert_output --partial "Wrote field 'sa_key' to file, exported GCP_SA_KEY_FILE"
+
+  unstub vault
+}
+
+@test "Pre-exit cleans up SECRET_TMPDIR when set" {
+  local tmpdir
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/buildkite-secrets-test-XXXXXX")
+  echo "test" > "$tmpdir/TEST_FILE"
+  export SECRET_TMPDIR="$tmpdir"
+
+  run bash -c "$PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Cleaning up secret files in $tmpdir"
+  [ ! -d "$tmpdir" ]
+}
+
+@test "Secrets default type is env when type not specified" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Exported field 'password' as DATABASE_PASSWORD"
+  refute_output --partial "Wrote field"
+  refute_output --partial "Cleaning up secret files"
+
+  unstub vault
+}
+
+@test "Secrets explicit type env works same as default" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_TYPE="env"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Exported field 'password' as DATABASE_PASSWORD"
+  refute_output --partial "Wrote field"
+
+  unstub vault
+}
+
+@test "Secrets invalid type fails with error" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_TYPE="badtype"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "invalid type 'badtype'"
+
+  unstub vault
+}
+
+@test "Secrets no cleanup when no file-type secrets used" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="password"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV="DATABASE_PASSWORD"
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/creds : echo '{\"password\":\"s3cret\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  refute_output --partial "Cleaning up secret files"
+
+  unstub vault
+}
