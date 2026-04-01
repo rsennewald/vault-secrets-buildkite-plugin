@@ -44,7 +44,7 @@ setup() {
   export BUILDKITE_PIPELINE_SLUG=testpipe
 
   stub vault \
-    "login -field=token -address=https://vault_svr_url -method=aws role=\"llamas\" : echo 'Successfully authenticated with IAM Role ${5}'"\
+    "login -field=token -address=https://vault_svr_url -method=aws role=llamas : echo vault-token" \
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
     "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
 
@@ -67,12 +67,12 @@ setup() {
   unset BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME
 
   stub vault \
-    "login -field=token -address=https://vault_svr_url -method=aws role=\"llamas\" : echo 'Successfully authenticated with IAM Role ${5}'"\
+    "login -field=token -address=https://vault_svr_url -method=aws role=llamas : echo vault-token" \
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
     "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
 
   stub curl \
-    "\* : echo llamas"
+    "-sf http://169.254.169.254/latest/meta-data/iam/security-credentials : echo llamas"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -168,4 +168,146 @@ setup() {
   assert_output --partial 'Successfully authenticated with JWT'
 
   unstub vault
+}
+
+#-------
+# AWS Auth Enhancements (AssumeRole, mount, header)
+
+@test "aws auth with assume-role-arn passes creds to vault login and exports VAULT_AUTH_AWS_*" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ASSUME_ROLE_ARN="arn:aws:iam::123456789012:role/my-ci-role"
+  export BUILDKITE_BUILD_ID="abc-123"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub aws \
+    "sts assume-role --role-arn arn:aws:iam::123456789012:role/my-ci-role --role-session-name buildkite-abc-123 --output json : echo '{\"Credentials\":{\"AccessKeyId\":\"AKIA_FAKE\",\"SecretAccessKey\":\"SECRET_FAKE\",\"SessionToken\":\"TOKEN_FAKE\"}}'"
+
+  stub vault \
+    "login -field=token -address=https://vault_svr_url -method=aws role=my-team-ci aws_access_key_id=AKIA_FAKE aws_secret_access_key=SECRET_FAKE aws_security_token=TOKEN_FAKE : echo vault-token-123" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Assuming IAM role"
+  assert_output --partial "Successfully authenticated with IAM Role"
+  assert_output --partial "Exported assumed AWS credentials as VAULT_AUTH_AWS_"
+  refute_output --partial "export AWS_ACCESS_KEY_ID"
+  refute_output --partial "export AWS_SECRET_ACCESS_KEY"
+  refute_output --partial "export AWS_SESSION_TOKEN"
+
+  unstub aws
+  unstub vault
+}
+
+@test "aws auth without assume-role-arn behaves as before" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="llamas"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub vault \
+    "login -field=token -address=https://vault_svr_url -method=aws role=llamas : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Successfully authenticated with IAM Role"
+
+  unstub vault
+}
+
+@test "aws auth with assume-role-arn fails when STS returns error" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ASSUME_ROLE_ARN="arn:aws:iam::123456789012:role/bad-role"
+  export BUILDKITE_BUILD_ID="abc-123"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub aws \
+    "sts assume-role --role-arn arn:aws:iam::123456789012:role/bad-role --role-session-name buildkite-abc-123 --output json : exit 1"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "Failed to assume role"
+
+  unstub aws
+}
+
+@test "aws auth with mount passes mount to vault login" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT="zooxlabs"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub vault \
+    "login -field=token -address=https://vault_svr_url -method=aws role=my-team-ci mount=zooxlabs : echo vault-token-123" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Successfully authenticated with IAM Role"
+
+  unstub vault
+}
+
+@test "aws auth with header_value passes header to vault login" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_HEADER_VALUE="zvault.zooxlabs.com"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub vault \
+    "login -field=token -address=https://vault_svr_url -method=aws role=my-team-ci header_value=zvault.zooxlabs.com : echo vault-token-123" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Successfully authenticated with IAM Role"
+
+  unstub vault
+}
+
+@test "aws auth with assume-role-arn fails when credential extraction returns empty" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ASSUME_ROLE_ARN="arn:aws:iam::123456789012:role/my-ci-role"
+  export BUILDKITE_BUILD_ID="abc-123"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub aws \
+    "sts assume-role --role-arn arn:aws:iam::123456789012:role/my-ci-role --role-session-name buildkite-abc-123 --output json : echo '{\"Credentials\":{}}'"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "Failed to extract credentials from STS response"
+
+  unstub aws
 }

@@ -7,6 +7,7 @@ requirements:
   - bash
   - vault
   - jq
+  - aws
 configuration:
   properties:
     path:
@@ -39,6 +40,15 @@ configuration:
           type: string
         aws-role-name:
           type: string
+        aws-assume-role-arn:
+          type: string
+          description: "IAM role ARN to assume via STS before Vault auth"
+        aws-header-value:
+          type: string
+          description: "Server ID header value for Vault AWS IAM auth"
+        mount:
+          type: string
+          description: "Vault auth mount point (e.g. zooxlabs). Applies to any auth method."
         jwt-env:
           type: string
         jwt-role:
