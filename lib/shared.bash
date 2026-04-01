@@ -24,7 +24,6 @@ vault_auth() {
 
   case "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD:-}" in
 
-    # AppRole authentication
     approle)
         if [ -z "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_SECRET_ENV:-}" ]; then
           secret_var="${VAULT_SECRET_ID?No Secret ID found}"
@@ -33,31 +32,35 @@ vault_auth() {
         fi
 
         if [[ -z "${secret_var:-}" ]]; then
-          echo "+++  🚨 No vault secret id found"
+          echo "+++ No vault secret id found" >&2
           exit 1
         fi
 
-        # export the vault token to be used for this job - this command writes to the auth/approle/login endpoint
-        # on success, vault will return the token which we export as VAULT_TOKEN for this shell
-        if ! VAULT_TOKEN=$(vault write -field=token -address="$server" auth/approle/login \
-        role_id="$BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_ROLE_ID" \
-        secret_id="${secret_var:-}"); then
-          echo "+++🚨 Failed to get vault token"
-          exit 1
+        local auth_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT:-}"
+        local approle_path="auth/approle/login"
+        if [[ -n "$auth_mount" ]]; then
+          approle_path="auth/${auth_mount}/login"
+        fi
+
+        local approle_rc=0
+        VAULT_TOKEN=$(vault write -field=token -address="$server" "$approle_path" \
+          role_id="$BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_ROLE_ID" \
+          secret_id="${secret_var:-}") || approle_rc=$?
+
+        if [[ $approle_rc -ne 0 ]]; then
+          echo "+++ Failed to get vault token" >&2
+          exit $approle_rc
         fi
 
         export VAULT_TOKEN
 
         echo "Successfully authenticated with RoleID ${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_ROLE_ID} and updated vault token"
-
-        return "${PIPESTATUS[0]}"
       ;;
 
-    # AWS Authentication
     aws)
-        # set the role name to use; either from the plugin configuration, or fall back to the EC2 instance role
+        local cred_prefix="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_CREDENTIAL_NAME_PREFIX:-}"
+
         if [ -z "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME:-}" ]; then
-          # get the name of the IAM role the EC2 instance is using, if any
           EC2_INSTANCE_IAM_ROLE=$(curl http://169.254.169.254/latest/meta-data/iam/security-credentials)
           aws_role_name="${EC2_INSTANCE_IAM_ROLE}"
         else
@@ -65,21 +68,48 @@ vault_auth() {
         fi
 
         if [[ -z "${aws_role_name:-}" ]]; then
-          echo "+++🚨 No EC2 instance IAM role defined; value is $aws_role_name"
+          echo "+++ No Vault role name defined and no EC2 instance IAM role found" >&2
           exit 1
         fi
 
-        # export the vault token to be used for this job - this is a standard vault auth command
-        # on success, vault will return the token which we export as VAULT_TOKEN for this shell
-        if ! VAULT_TOKEN=$(vault login -field=token -address="$server" -method=aws role="$aws_role_name"); then
-          echo "+++🚨 Failed to get vault token"
+        local -a vault_login_args=(-field=token "-address=$server" -method=aws "role=$aws_role_name")
+        local aws_auth_header="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_HEADER_VALUE:-}"
+        local auth_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT:-}"
+
+        if [[ -n "$aws_auth_header" ]]; then
+          vault_login_args+=("header_value=$aws_auth_header")
+        fi
+        if [[ -n "$auth_mount" ]]; then
+          vault_login_args+=("mount=$auth_mount")
+        fi
+
+        if [[ -n "$cred_prefix" ]]; then
+          local ak_var="${cred_prefix}AWS_ACCESS_KEY_ID"
+          local sk_var="${cred_prefix}AWS_SECRET_ACCESS_KEY"
+          local st_var="${cred_prefix}AWS_SESSION_TOKEN"
+          if [[ -z "${!ak_var:-}" || -z "${!sk_var:-}" || -z "${!st_var:-}" ]]; then
+            echo "+++ AWS credentials not found with prefix '${cred_prefix}'" >&2
+            echo "    Expected: ${ak_var}, ${sk_var}, ${st_var}" >&2
+            echo "    Ensure the aws-assume-role-with-web-identity plugin runs before this plugin" >&2
+            exit 1
+          fi
+          vault_login_args+=("aws_access_key_id=${!ak_var}")
+          vault_login_args+=("aws_secret_access_key=${!sk_var}")
+          vault_login_args+=("aws_security_token=${!st_var}")
+          echo "Using AWS credentials from ${cred_prefix}AWS_* env vars" >&2
+        fi
+
+        local vault_login_rc=0
+        VAULT_TOKEN=$(vault login "${vault_login_args[@]}") || vault_login_rc=$?
+
+        if [[ $vault_login_rc -ne 0 ]]; then
+          echo "+++ Failed to get vault token" >&2
+          exit $vault_login_rc
         fi
 
         export VAULT_TOKEN
 
         echo "Successfully authenticated with IAM Role ${aws_role_name} and updated vault token"
-
-        return "${PIPESTATUS[0]}"
       ;;
 
     jwt)
@@ -91,20 +121,29 @@ vault_auth() {
         fi
 
         if [[ -z "${jwt_var:-}" ]]; then
-          echo "+++  🚨 No JWT found."
+          echo "+++ No JWT found." >&2
           exit 1
         fi
 
-        if ! VAULT_TOKEN=$(vault write -field=token auth/jwt/login role="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ROLE:-"buildkite"}" jwt="${jwt_var:-}"); then
-          echo "+++🚨 Failed to get vault token"
-          exit 1
+        local auth_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT:-}"
+        local jwt_path="auth/jwt/login"
+        if [[ -n "$auth_mount" ]]; then
+          jwt_path="auth/${auth_mount}/login"
+        fi
+
+        local jwt_rc=0
+        VAULT_TOKEN=$(vault write -field=token "$jwt_path" \
+          role="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ROLE:-"buildkite"}" \
+          jwt="${jwt_var:-}") || jwt_rc=$?
+
+        if [[ $jwt_rc -ne 0 ]]; then
+          echo "+++ Failed to get vault token" >&2
+          exit $jwt_rc
         fi
 
         export VAULT_TOKEN
 
         echo "Successfully authenticated with JWT"
-
-        return "${PIPESTATUS[0]}"
     ;;
   esac
 }
@@ -114,18 +153,20 @@ list_secrets() {
   local key="$2"
 
   local _list
+  local list_rc=0
 
-  if ! _list=$(vault kv list -address="$server" -format=yaml "$key" 2>&1 | sed 's/^- //g'); then
+  _list=$(vault kv list -address="$server" -format=yaml "$key" 2>&1 | sed 's/^- //g') || list_rc=$?
+
+  if [[ $list_rc -ne 0 ]]; then
     echo "unable to list secrets at $key: $_list" >&2
-    return 1
+    return $list_rc
   fi
-  local retVal=${PIPESTATUS[0]}
 
   for lineItem in ${_list}; do
     echo "$key/${lineItem}"
   done
 
-  return "$retVal"
+  return 0
 }
 
 secret_exists() {

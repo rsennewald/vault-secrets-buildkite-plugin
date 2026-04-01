@@ -39,6 +39,15 @@ configuration:
           type: string
         aws-role-name:
           type: string
+        aws-credential-name-prefix:
+          type: string
+          description: "Prefix for AWS credential env vars (e.g. VAULT_AUTH_ reads VAULT_AUTH_AWS_ACCESS_KEY_ID)"
+        aws-header-value:
+          type: string
+          description: "Server ID header value for Vault AWS IAM auth"
+        mount:
+          type: string
+          description: "Vault auth mount point (e.g. zooxlabs). Applies to any auth method."
         jwt-env:
           type: string
         jwt-role:
