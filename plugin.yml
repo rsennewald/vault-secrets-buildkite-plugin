@@ -84,6 +84,10 @@ configuration:
                 env:
                   type: string
                   description: "Environment variable name to export the field value as"
+                type:
+                  type: string
+                  enum: ['env', 'file']
+                  description: "Export as env var (default) or write to temp file"
               required: [ name, env ]
         required: [ path ]
   additionalProperties: false
