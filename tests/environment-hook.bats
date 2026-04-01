@@ -735,6 +735,29 @@ setup() {
   unstub vault
 }
 
+@test "Secrets mixed format: string dump-all and object field-mapped in same list" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0="secret/ci/team/db-creds"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_PATH="secret/ci/team/api-keys"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_NAME="token"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_1_FIELDS_0_ENV="API_TOKEN"
+  export TESTDATA_DB='DB_USER: admin'
+
+  stub vault \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml data/buildkite : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=yaml secret/ci/team/db-creds : echo '${TESTDATA_DB}'" \
+    "kv get -address=https://vault_svr_url -field=data -format=json secret/ci/team/api-keys : echo '{\"token\":\"abc123\",\"secret\":\"xyz\"}'"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial "Fetching secret (dump-all): secret/ci/team/db-creds"
+  assert_output --partial "Fetching secret (field-mapped): secret/ci/team/api-keys"
+  assert_output --partial "Exported field 'token' as API_TOKEN"
+
+  unstub vault
+}
+
 @test "Secrets field-mapping fails when env is missing" {
   export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH="secret/ci/team/creds"
   export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME="host"

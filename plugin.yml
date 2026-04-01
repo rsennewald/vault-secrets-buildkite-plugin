@@ -6,8 +6,6 @@ requirements:
   - curl
   - bash
   - vault
-  - jq
-  - aws
 configuration:
   properties:
     path:

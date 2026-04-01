@@ -311,3 +311,78 @@ setup() {
 
   unstub aws
 }
+
+@test "aws auth with assume-role-arn fails when vault login fails after successful STS" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=aws
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME="my-team-ci"
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ASSUME_ROLE_ARN="arn:aws:iam::123456789012:role/my-ci-role"
+  export BUILDKITE_BUILD_ID="abc-123"
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+
+  stub aws \
+    "sts assume-role --role-arn arn:aws:iam::123456789012:role/my-ci-role --role-session-name buildkite-abc-123 --output json : echo '{\"Credentials\":{\"AccessKeyId\":\"AKIA_FAKE\",\"SecretAccessKey\":\"SECRET_FAKE\",\"SessionToken\":\"TOKEN_FAKE\"}}'"
+
+  stub vault \
+    "login -field=token -address=https://vault_svr_url -method=aws role=my-team-ci aws_access_key_id=AKIA_FAKE aws_secret_access_key=SECRET_FAKE aws_security_token=TOKEN_FAKE : exit 1"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial "Assuming IAM role"
+  assert_output --partial "Successfully assumed role"
+  assert_output --partial "Failed to get vault token"
+
+  unstub aws
+  unstub vault
+}
+
+#-------
+# Mount parameter with non-AWS auth methods
+
+@test "approle auth with custom mount" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  export VAULT_SECRET_ID=abcde12345
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_ROLE_ID=buildkite
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=approle
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT=custom-approle
+
+  stub vault \
+    "write -field=token -address=https://vault_svr_url auth/custom-approle/login role_id=buildkite secret_id=abcde12345 : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial 'Successfully authenticated with RoleID'
+
+  unstub vault
+}
+
+@test "jwt auth with custom mount" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+  export VAULT_JWT=llamas
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT=custom-jwt
+
+  stub vault \
+    "write -field=token auth/custom-jwt/login role=buildkite jwt=llamas : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial 'Successfully authenticated with JWT'
+
+  unstub vault
+}

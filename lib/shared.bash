@@ -33,8 +33,8 @@ vault_auth() {
         fi
 
         if [[ -z "${secret_var:-}" ]]; then
-          echo "+++  🚨 No vault secret id found"
-          exit 1
+          echo "+++ No vault secret id found" >&2
+          return 1
         fi
 
         # export the vault token to be used for this job - this command writes to the auth/approle/login endpoint
@@ -63,6 +63,14 @@ vault_auth() {
         local assumed_ak="" assumed_sk="" assumed_st=""
 
         if [[ -n "$aws_assume_role_arn" ]]; then
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "+++ 'aws' CLI is required for aws-assume-role-arn but was not found in PATH" >&2
+            return 1
+          fi
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "+++ 'jq' is required for aws-assume-role-arn but was not found in PATH" >&2
+            return 1
+          fi
           echo "Assuming IAM role: $aws_assume_role_arn" >&2
           local session_name="buildkite-${BUILDKITE_BUILD_ID:-unknown}"
           local sts_output
@@ -72,14 +80,14 @@ vault_auth() {
               --output json 2>&1); then
             echo "+++ Failed to assume role $aws_assume_role_arn" >&2
             echo "    STS error: $sts_output" >&2
-            exit 1
+            return 1
           fi
           assumed_ak=$(echo "$sts_output" | jq -r '.Credentials.AccessKeyId // empty')
           assumed_sk=$(echo "$sts_output" | jq -r '.Credentials.SecretAccessKey // empty')
           assumed_st=$(echo "$sts_output" | jq -r '.Credentials.SessionToken // empty')
           if [[ -z "$assumed_ak" || -z "$assumed_sk" || -z "$assumed_st" ]]; then
             echo "+++ Failed to extract credentials from STS response" >&2
-            exit 1
+            return 1
           fi
           echo "Successfully assumed role $aws_assume_role_arn" >&2
         fi
@@ -93,28 +101,28 @@ vault_auth() {
 
         if [[ -z "${aws_role_name:-}" ]]; then
           echo "+++ No Vault role name defined and no EC2 instance IAM role found" >&2
-          exit 1
+          return 1
         fi
 
-        local vault_login_args="-field=token -address=$server -method=aws role=$aws_role_name"
+        local -a vault_login_args=(-field=token "-address=$server" -method=aws "role=$aws_role_name")
         local aws_auth_header="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_HEADER_VALUE:-}"
         local auth_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT:-}"
 
         if [[ -n "$aws_auth_header" ]]; then
-          vault_login_args="$vault_login_args header_value=$aws_auth_header"
+          vault_login_args+=("header_value=$aws_auth_header")
         fi
         if [[ -n "$auth_mount" ]]; then
-          vault_login_args="$vault_login_args mount=$auth_mount"
+          vault_login_args+=("mount=$auth_mount")
         fi
 
         if [[ -n "$assumed_ak" ]]; then
-          vault_login_args="$vault_login_args aws_access_key_id=$assumed_ak"
-          vault_login_args="$vault_login_args aws_secret_access_key=$assumed_sk"
-          vault_login_args="$vault_login_args aws_security_token=$assumed_st"
+          vault_login_args+=("aws_access_key_id=$assumed_ak")
+          vault_login_args+=("aws_secret_access_key=$assumed_sk")
+          vault_login_args+=("aws_security_token=$assumed_st")
         fi
 
         local vault_login_rc=0
-        VAULT_TOKEN=$(eval vault login $vault_login_args) || vault_login_rc=$?
+        VAULT_TOKEN=$(vault login "${vault_login_args[@]}") || vault_login_rc=$?
 
         if [[ $vault_login_rc -ne 0 ]]; then
           echo "+++ Failed to get vault token" >&2
@@ -144,8 +152,8 @@ vault_auth() {
         fi
 
         if [[ -z "${jwt_var:-}" ]]; then
-          echo "+++  🚨 No JWT found."
-          exit 1
+          echo "+++ No JWT found" >&2
+          return 1
         fi
 
         local auth_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT:-jwt}"

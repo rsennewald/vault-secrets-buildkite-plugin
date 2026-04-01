@@ -117,6 +117,10 @@ processExplicitSecrets() {
     fi
 
     if [[ -n "${!field_name_var:-}" ]]; then
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "+++ 'jq' is required for field-mapped secrets but was not found in PATH" >&2
+        exit 1
+      fi
       echo "Fetching secret (field-mapped): ${secret_path}" >&2
       local secret_json
       if ! secret_json=$(vault kv get -address="$vault_server" -field=data -format=json "$secret_path" 2>&1); then
