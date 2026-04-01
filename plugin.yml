@@ -6,6 +6,7 @@ requirements:
   - curl
   - bash
   - vault
+  - jq
 configuration:
   properties:
     path:
@@ -44,6 +45,29 @@ configuration:
           type: string
     secrets:
       type: array
+      items:
+        oneOf:
+          - type: string
+            description: "Full Vault KV path to the secret (backward compatible string format)"
+          - type: object
+            properties:
+              path:
+                type: string
+                description: "Full Vault KV path to the secret"
+              fields:
+                type: array
+                description: "Specific fields to extract (omit to dump all fields as env vars)"
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: "Field name within the Vault secret"
+                    env:
+                      type: string
+                      description: "Environment variable name to export the field value as"
+                  required: [ name, env ]
+            required: [ path ]
   additionalProperties: false
   required: [ auth ]
     
