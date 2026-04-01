@@ -3,6 +3,54 @@ set -ueo pipefail
 
 [ -z "${TMPDIR:-}" ] && TMPDIR=${TMPDIR:-/tmp}
 
+assume_role_via_cert_auth() {
+  local vault_sts_role="$1"
+  local cert_path="$2"
+  local cert_key_path="$3"
+  local server="${4:-$VAULT_ADDR}"
+  local cert_mount="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_CERT_MOUNT:-machine-auth-g1}"
+
+  if [[ ! -f "$cert_path" ]]; then
+    echo "+++ cert-path not found: $cert_path" >&2
+    exit 1
+  fi
+  if [[ ! -f "$cert_key_path" ]]; then
+    echo "+++ cert-key-path not found: $cert_key_path" >&2
+    exit 1
+  fi
+
+  echo "Authenticating to Vault via cert auth (mount: $cert_mount)" >&2
+  local cert_token
+  local cert_err_file
+  cert_err_file=$(mktemp "${TMPDIR}/vault-cert-err.XXXXXX")
+  if ! cert_token=$(vault login -field=token -address="$server" \
+      -method=cert \
+      -client-cert="$cert_path" \
+      -client-key="$cert_key_path" \
+      name="$cert_mount" 2>"$cert_err_file"); then
+    echo "+++ Cert auth failed" >&2
+    cat "$cert_err_file" >&2 || true
+    rm -f "$cert_err_file"
+    exit 1
+  fi
+  rm -f "$cert_err_file"
+
+  echo "Reading AWS credentials from Vault AWS secrets engine (role: $vault_sts_role)" >&2
+  local aws_creds
+  local sts_err_file
+  sts_err_file=$(mktemp "${TMPDIR}/vault-sts-err.XXXXXX")
+  if ! aws_creds=$(VAULT_TOKEN="$cert_token" vault read -address="$server" \
+      -format=json "aws/sts/$vault_sts_role" 2>"$sts_err_file"); then
+    echo "+++ Failed to get AWS credentials via Vault AWS engine" >&2
+    cat "$sts_err_file" >&2 || true
+    rm -f "$sts_err_file"
+    exit 1
+  fi
+  rm -f "$sts_err_file"
+
+  echo "$aws_creds"
+}
+
 vault_auth() {
   local server="$1"
 
@@ -58,7 +106,10 @@ vault_auth() {
       ;;
 
     aws)
+        local cert_path="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_CERT_PATH:-}"
+        local cert_key_path="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_CERT_KEY_PATH:-}"
         local cred_prefix="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_CREDENTIAL_NAME_PREFIX:-}"
+        local aws_vault_role="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_VAULT_STS_ROLE:-}"
 
         if [ -z "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME:-}" ]; then
           EC2_INSTANCE_IAM_ROLE=$(curl http://169.254.169.254/latest/meta-data/iam/security-credentials)
@@ -83,7 +134,30 @@ vault_auth() {
           vault_login_args+=("mount=$auth_mount")
         fi
 
-        if [[ -n "$cred_prefix" ]]; then
+        if [[ -n "$cert_path" || -n "$cert_key_path" ]]; then
+          if [[ -z "$cert_path" || -z "$cert_key_path" ]]; then
+            echo "+++ cert-path and cert-key-path must both be set" >&2
+            exit 1
+          fi
+          if [[ -z "$aws_vault_role" ]]; then
+            echo "+++ aws-vault-sts-role is required when using cert-path/cert-key-path" >&2
+            exit 1
+          fi
+          echo "On-prem detected: using cert-based bootstrap" >&2
+          local sts_output
+          sts_output=$(assume_role_via_cert_auth "$aws_vault_role" "$cert_path" "$cert_key_path" "$server")
+          local assumed_ak assumed_sk assumed_st
+          assumed_ak=$(echo "$sts_output" | jq -r '.data.access_key // empty')
+          assumed_sk=$(echo "$sts_output" | jq -r '.data.secret_key // empty')
+          assumed_st=$(echo "$sts_output" | jq -r '.data.security_token // empty')
+          if [[ -z "$assumed_ak" || -z "$assumed_sk" || -z "$assumed_st" ]]; then
+            echo "+++ Failed to extract credentials from Vault AWS engine response" >&2
+            exit 1
+          fi
+          vault_login_args+=("aws_access_key_id=$assumed_ak")
+          vault_login_args+=("aws_secret_access_key=$assumed_sk")
+          vault_login_args+=("aws_security_token=$assumed_st")
+        elif [[ -n "$cred_prefix" ]]; then
           local ak_var="${cred_prefix}AWS_ACCESS_KEY_ID"
           local sk_var="${cred_prefix}AWS_SECRET_ACCESS_KEY"
           local st_var="${cred_prefix}AWS_SESSION_TOKEN"

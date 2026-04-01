@@ -48,6 +48,18 @@ configuration:
         mount:
           type: string
           description: "Vault auth mount point (e.g. zooxlabs). Applies to any auth method."
+        aws-vault-sts-role:
+          type: string
+          description: "Vault AWS secrets engine STS role name for cert-based bootstrap"
+        cert-path:
+          type: string
+          description: "Path to X.509 client certificate for on-prem cert auth"
+        cert-key-path:
+          type: string
+          description: "Path to X.509 client certificate private key"
+        cert-mount:
+          type: string
+          description: "Vault cert auth mount point (default: machine-auth-g1)"
         jwt-env:
           type: string
         jwt-role:
