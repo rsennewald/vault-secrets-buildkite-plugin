@@ -101,6 +101,7 @@ vault_auth() {
         fi
 
         export VAULT_TOKEN
+        track_redacted_env "VAULT_TOKEN"
 
         echo "Successfully authenticated with RoleID ${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_ROLE_ID} and updated vault token"
       ;;
@@ -182,6 +183,7 @@ vault_auth() {
         fi
 
         export VAULT_TOKEN
+        track_redacted_env "VAULT_TOKEN"
 
         echo "Successfully authenticated with IAM Role ${aws_role_name} and updated vault token"
       ;;
@@ -216,6 +218,7 @@ vault_auth() {
         fi
 
         export VAULT_TOKEN
+        track_redacted_env "VAULT_TOKEN"
 
         echo "Successfully authenticated with JWT"
     ;;
@@ -389,4 +392,135 @@ add_ssh_private_key_to_agent() {
 
 grep_secrets() {
   grep -E 'private_ssh_key|id_rsa_github|env|environment|git-credentials$' "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Secret redaction - register all plugin-fetched secrets with the Buildkite
+# agent's log redactor so literal values are scrubbed from job output.
+# ---------------------------------------------------------------------------
+
+# Probe once per hook run.  Returns 0 if buildkite-agent redactor add is
+# available, 1 otherwise (with a one-time warning on stderr).
+_REDACTOR_SUPPORTED=""
+_detect_redactor() {
+  if ! command -v buildkite-agent >/dev/null 2>&1; then
+    echo "+++ :warning: buildkite-agent not found in PATH" >&2
+    echo "    Secrets fetched by this plugin will NOT be registered with the" >&2
+    echo "    agent's log redactor, so any secret value that is later printed" >&2
+    echo "    (set -x, cat \$file, child process output, etc.) may appear in" >&2
+    echo "    build logs verbatim." >&2
+    echo "    Recommendation: ensure buildkite-agent v3.55 or newer is on PATH" >&2
+    echo "    in the environment hook to enable automatic secret redaction." >&2
+    echo "    The plugin will continue without redaction." >&2
+    return 1
+  fi
+  if ! buildkite-agent redactor --help >/dev/null 2>&1; then
+    echo "+++ :warning: buildkite-agent redactor subcommand unavailable" >&2
+    echo "    Secrets fetched by this plugin will NOT be registered with the" >&2
+    echo "    agent's log redactor, so any secret value that is later printed" >&2
+    echo "    (set -x, cat \$file, child process output, etc.) may appear in" >&2
+    echo "    build logs verbatim." >&2
+    echo "    Recommendation: upgrade buildkite-agent to v3.55 or newer to" >&2
+    echo "    enable automatic secret redaction." >&2
+    echo "    The plugin will continue without redaction." >&2
+    return 1
+  fi
+  return 0
+}
+
+_redactor_supported() {
+  if [[ -z "$_REDACTOR_SUPPORTED" ]]; then
+    if _detect_redactor; then
+      _REDACTOR_SUPPORTED="yes"
+    else
+      _REDACTOR_SUPPORTED="no"
+    fi
+  fi
+  [[ "$_REDACTOR_SUPPORTED" == "yes" ]]
+}
+
+# Env var names whose live values to register with the redactor.
+_PLUGIN_REDACT_NAMES=()
+# Parallel arrays for literal secrets (SSH key bytes, file-type field content)
+# that never appear in env vars.
+_PLUGIN_REDACT_LITERAL_LABELS=()
+_PLUGIN_REDACT_LITERAL_VALUES=()
+# Counter for unique SSH key labels when multiple keys are discovered.
+_PLUGIN_SSH_KEY_INDEX=0
+
+# Track an env var name to be registered with the redactor at end-of-hook.
+track_redacted_env() {
+  local name
+  for name in "$@"; do
+    [[ -z "$name" ]] && continue
+    _PLUGIN_REDACT_NAMES+=("$name")
+  done
+}
+
+# Track a raw literal value (non-env) to be registered with the redactor.
+# label must be unique within a hook run; value is the secret bytes.
+track_redacted_literal() {
+  local label="$1"
+  local value="$2"
+  [[ -z "$value" ]] && return 0
+  _PLUGIN_REDACT_LITERAL_LABELS+=("$label")
+  _PLUGIN_REDACT_LITERAL_VALUES+=("$value")
+}
+
+# Build a JSON object from (labels, values) parallel arrays and pipe it to
+# buildkite-agent redactor add --format=json in a single invocation.
+# Used by both redact_tracked_secrets and git-credential-vault-secrets.
+#
+# Secret values are never passed as command-line arguments (which would expose
+# them in /proc/*/cmdline). Each value is piped through jq -Rs . via stdin to
+# produce a JSON string literal, then assembled in a bash string.
+_build_and_send_redactor_payload() {
+  local -n _labels="$1"
+  local -n _values="$2"
+  local i label value k_json v_json json_pairs=""
+  for ((i = 0; i < ${#_labels[@]}; i++)); do
+    label="${_labels[$i]}"
+    value="${_values[$i]}"
+    [[ -z "$value" ]] && continue
+    k_json="$(printf '%s' "$label" | jq -Rs .)"
+    v_json="$(printf '%s' "$value" | jq -Rs .)"
+    [[ -n "$json_pairs" ]] && json_pairs+=","
+    json_pairs+="${k_json}:${v_json}"
+  done
+  [[ -z "$json_pairs" ]] && return 0
+  # The buildkite-agent redactor reads secrets from stdin when no file
+  # argument is given.  Do NOT pass "-": v3.114 (and likely others) do not
+  # treat "-" as a stdin alias and will fail with "no such file or
+  # directory: -".  Surface any non-zero exit so silent registration
+  # failures (which leave secrets unredacted) cannot regress unnoticed.
+  local _redactor_rc=0
+  local _redactor_stderr
+  _redactor_stderr=$(printf '{%s}' "$json_pairs" | buildkite-agent redactor add --format=json 2>&1 >/dev/null) || _redactor_rc=$?
+  if [[ $_redactor_rc -ne 0 ]]; then
+    echo "+++ :warning: buildkite-agent redactor add failed (rc=$_redactor_rc)" >&2
+    [[ -n "$_redactor_stderr" ]] && echo "$_redactor_stderr" | sed 's/^/    /' >&2
+  fi
+}
+
+# Call once at end of the environment hook to register all tracked secrets.
+redact_tracked_secrets() {
+  _redactor_supported || return 0
+
+  local -a all_labels=()
+  local -a all_values=()
+  local name i
+
+  for name in "${_PLUGIN_REDACT_NAMES[@]}"; do
+    [[ -z "${!name+set}" ]] && continue
+    all_labels+=("$name")
+    all_values+=("${!name}")
+  done
+
+  for ((i = 0; i < ${#_PLUGIN_REDACT_LITERAL_LABELS[@]}; i++)); do
+    all_labels+=("${_PLUGIN_REDACT_LITERAL_LABELS[$i]}")
+    all_values+=("${_PLUGIN_REDACT_LITERAL_VALUES[$i]}")
+  done
+
+  [[ "${#all_labels[@]}" -eq 0 ]] && return 0
+  _build_and_send_redactor_payload all_labels all_values
 }

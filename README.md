@@ -425,6 +425,40 @@ steps:
             secret-env: 'MY_SECRET_ENV'
 ```
 
+## Log redaction
+
+On Buildkite agents v3.55 and newer, every secret value fetched by this plugin
+is automatically registered with the agent's log redactor so the literal bytes
+are scrubbed from all subsequent build output, regardless of how the value is
+referenced (environment variable expansion, `set -x` traces, `cat` on a secret
+file, child process output, etc.).
+
+**What is covered:**
+
+- All environment variables exported from auto-discovered `env` / `environment`
+  secrets and from `secrets[].fields[].type: env` field-mapped secrets.
+- `VAULT_TOKEN` after each successful authentication.
+- SSH private key bytes loaded into the SSH agent.
+- File contents written by `secrets[].fields[].type: file` (the file path
+  itself is not registered - only the content).
+- Git credential passwords and usernames passed through the
+  `git-credential-vault-secrets` helper.
+
+**What is not covered:**
+
+- Environment variables that existed before the plugin ran (set by the agent,
+  other plugins, or the surrounding shell). Only values the plugin itself
+  exports are tracked.
+- Values fetched by tools the plugin invokes transitively (e.g. `vault` CLI
+  stdout beyond the fields it explicitly reads).
+
+**Older agents (pre-v3.55):**
+
+If the `buildkite-agent` binary is not on `PATH` or the `redactor` subcommand
+is unavailable, the plugin prints a `+++ :warning:` message to the build log
+recommending an upgrade and continues without redaction. The plugin never fails
+a build due to the absence of redaction support.
+
 ## Testing
 ---
 ### Unit tests
