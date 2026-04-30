@@ -12,6 +12,8 @@ processSshSecrets() {
     exit 1
   fi
   echo "Downloaded ${#ssh_key} bytes of ssh key"
+  track_redacted_literal "_VAULT_PLUGIN_SSH_KEY_${_PLUGIN_SSH_KEY_INDEX}" "$ssh_key"
+  _PLUGIN_SSH_KEY_INDEX=$((_PLUGIN_SSH_KEY_INDEX + 1))
   add_ssh_private_key_to_agent "$ssh_key"
   key_found=1
 
@@ -59,6 +61,12 @@ processEnvSecrets() {
   fi
 
   echo "Evaluating ${#envscript} bytes of env"
+  local _line
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+      track_redacted_env "${BASH_REMATCH[1]}"
+    fi
+  done <<< "$envscript"
   set -o allexport
   eval "$envscript"
   set +o allexport
@@ -181,9 +189,11 @@ processExplicitSecrets() {
           install -m 600 /dev/null "$dest"
           printf '%s' "$field_value" > "$dest"
           export "${env_var_name}=${dest}"
+          track_redacted_literal "_VAULT_PLUGIN_FILE_${env_var_name}" "$field_value"
           echo "Wrote field '$field_name' to file, exported ${env_var_name}" >&2
         elif [[ "$field_type" == "env" ]]; then
           export "${env_var_name}=${field_value}"
+          track_redacted_env "${env_var_name}"
           echo "Exported field '$field_name' as ${env_var_name}" >&2
         else
           echo "+++ Field '$field_name' in secret $secret_path has invalid type '$field_type' (must be 'env' or 'file')" >&2
@@ -358,5 +368,7 @@ if [[ -n "$vault_server" ]] ; then
   dumpEnvSecrets
 
   processExplicitSecrets "$vault_server"
+
+  redact_tracked_secrets
 
 fi
