@@ -2,6 +2,11 @@
 
 set -eu -o pipefail
 
+if [[ "${BUILDKITE_PLUGIN_VAULT_SECRETS_HOOK:-environment}" != environment && -z "${_VAULT_SECRETS_FROM_PRE_COMMAND:-}" ]]; then
+  echo "Skipping environment hook; secrets load in the ${BUILDKITE_PLUGIN_VAULT_SECRETS_HOOK} hook"
+  exit 0
+fi
+
 processSshSecrets() {
   local vaultServer="$1"
   local key="$2"

@@ -801,3 +801,56 @@ setup() {
   assert_success
   refute_output --partial 'Revoking the Vault token'
 }
+
+@test "hook: pre-command skips the environment hook and loads secrets in pre-command" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_HOOK=pre-command
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  export BUILDKITE_JOB_ID=job-5
+  export VAULT_JWT=llamas
+
+  run bash -c "$PWD/hooks/environment"
+  assert_success
+  assert_output 'Skipping environment hook; secrets load in the pre-command hook'
+
+  stub vault \
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=buildkite jwt=llamas : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+
+  run bash -c "source $PWD/hooks/pre-command && echo \"addr=\$VAULT_ADDR token=\$VAULT_TOKEN\""
+  assert_success
+  assert_output --partial 'Successfully authenticated with JWT'
+  assert_output --partial 'addr=https://vault_svr_url token=vault-token'
+
+  unstub vault
+}
+
+@test "pre-command does nothing without hook: pre-command" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+
+  run bash -c "$PWD/hooks/pre-command"
+
+  assert_success
+  assert_output ''
+}
+
+@test "pre-exit still cleans up when the token file is truncated" {
+  export BUILDKITE_JOB_ID=job-6
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  printf '%s\n' https://vault_svr_url >"$TMPDIR/vault-secrets-plugin-job-6.token"
+  export SECRET_TMPDIR="$BATS_TEST_TMPDIR/secret-files"
+  mkdir "$SECRET_TMPDIR"
+
+  run bash -c "$PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial 'Could not revoke the Vault token'
+  assert_output --partial 'Cleaning up secret files'
+  assert_file_not_exists "$TMPDIR/vault-secrets-plugin-job-6.token"
+  assert_dir_not_exists "$SECRET_TMPDIR"
+}

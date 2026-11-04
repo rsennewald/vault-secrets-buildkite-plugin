@@ -107,6 +107,9 @@ steps:
 After logging in, the plugin exports `VAULT_TOKEN` and `VAULT_ADDR` for the job, and the
 `pre-exit` hook revokes the token.
 
+Set `hook: pre-command` to load the secrets just before the command instead of in the
+`environment` hook, so checkout and `post-checkout` hooks don't see them.
+
 ### Custom Secret Keys
 It is possible to download secrets from a custom secret key, by using the `secret` option on the plugin. Setting this option will tell the plugin to check the KV store for your secret (ex: `secret/buildkite/supersecret`).
 This secret should still follow the same conventions as the `env` and `environment` secrets.

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -eu -o pipefail
+
+if [[ "${BUILDKITE_PLUGIN_VAULT_SECRETS_HOOK:-environment}" != pre-command ]]; then
+  exit 0
+fi
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_VAULT_SECRETS_FROM_PRE_COMMAND=1
+# shellcheck source=hooks/environment
+. "$DIR/environment"
+unset _VAULT_SECRETS_FROM_PRE_COMMAND
