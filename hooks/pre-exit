@@ -1,5 +1,19 @@
 #!/bin/bash
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/shared.bash
+. "$DIR/../lib/shared.bash"
+
+token_file=$(plugin_token_file)
+if [[ -f "$token_file" ]]; then
+  { read -r token_addr && read -r token; } <"$token_file" || true
+  rm -f "$token_file"
+  echo "~~~ Revoking the Vault token"
+  VAULT_TOKEN="$token" VAULT_CLIENT_TIMEOUT=10s VAULT_MAX_RETRIES=0 \
+    vault token revoke -address="$token_addr" -self >/dev/null 2>&1 ||
+    echo "Could not revoke the Vault token; it expires at its TTL" >&2
+fi
+
 if [[ -n "${SECRET_TMPDIR:-}" && -d "${SECRET_TMPDIR}" ]]; then
   echo "~~~ Cleaning up secret files in ${SECRET_TMPDIR}"
   rm -rf "${SECRET_TMPDIR}"

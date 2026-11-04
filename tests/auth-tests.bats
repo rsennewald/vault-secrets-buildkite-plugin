@@ -11,6 +11,7 @@ load "${BATS_PLUGIN_PATH}/load.bash"
 setup() {
   # if this is not defined, the hook will try to use EC2 metadata to get the instance role
   export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_AWS_ROLE_NAME='role'
+  export TMPDIR="$BATS_TEST_TMPDIR"
 }
 
 @test "approle auth method" {
@@ -92,9 +93,10 @@ setup() {
   export BUILDKITE_PIPELINE_SLUG=testpipe
 
   stub vault \
-    "write -field=token auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
-    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : exit 0"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -113,9 +115,10 @@ setup() {
   export BUILDKITE_PIPELINE_SLUG=testpipe
 
   stub vault \
-    "write -field=token auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
-    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : exit 0"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -135,9 +138,10 @@ setup() {
   export BUILDKITE_PIPELINE_SLUG=testpipe
 
   stub vault \
-    "write -field=token auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=buildkite jwt=llamas : echo 'Successfully authenticated.'"\
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
-    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : exit 0"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -158,9 +162,10 @@ setup() {
   export BUILDKITE_PIPELINE_SLUG=testpipe
 
   stub vault \
-    "write -field=token auth/jwt/login role=bkbkbk jwt=llamas : echo 'Successfully authenticated.'"\
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=bkbkbk jwt=llamas : echo 'Successfully authenticated.'"\
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
-    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : exit 0"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -341,9 +346,10 @@ setup() {
   export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT=custom-jwt
 
   stub vault \
-    "write -field=token auth/custom-jwt/login role=buildkite jwt=llamas : echo vault-token" \
+    "write -field=token -address=https://vault_svr_url auth/custom-jwt/login role=buildkite jwt=llamas : echo vault-token" \
     "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
-    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0"
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : exit 0"
 
   run bash -c "$PWD/hooks/environment && $PWD/hooks/pre-exit"
 
@@ -681,4 +687,117 @@ setup() {
   assert_success
 
   unstub vault
+}
+
+@test "jwt auth requests a Buildkite OIDC token when no JWT is given, then pre-exit revokes the token" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_MOUNT=buildkite
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ROLE=my-team-ci
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  export BUILDKITE_JOB_ID=job-1
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  unset VAULT_JWT VAULT_ADDR
+
+  stub buildkite-agent \
+    "oidc request-token --audience https://vault_svr_url --lifetime 300 : echo minted-jwt" \
+    "redactor --help : exit 1"
+  stub vault \
+    "write -field=token -address=https://vault_svr_url auth/buildkite/login role=my-team-ci jwt=minted-jwt : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "token revoke -address=https://vault_svr_url -self : test \"\$VAULT_TOKEN\" = vault-token"
+
+  run bash -c "source $PWD/hooks/environment && echo \"addr=\$VAULT_ADDR token=\$VAULT_TOKEN\" && stat -c %a $TMPDIR/vault-secrets-plugin-job-1.token && $PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial 'Successfully authenticated with JWT'
+  assert_output --partial 'addr=https://vault_svr_url token=vault-token'
+  assert_output --partial $'\n600\n'
+  assert_output --partial 'Revoking the Vault token'
+  refute_output --partial 'Could not revoke'
+  assert_file_not_exists "$TMPDIR/vault-secrets-plugin-job-1.token"
+
+  unstub buildkite-agent
+  unstub vault
+}
+
+@test "pre-exit revokes the jwt token even when the environment hook failed after logging in" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_PATH=kv2/team/forbidden
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_NAME=x
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SECRETS_0_FIELDS_0_ENV=X
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  export BUILDKITE_JOB_ID=job-2
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  export VAULT_JWT=llamas
+
+  stub vault \
+    "write -field=token -address=https://vault_svr_url auth/jwt/login role=buildkite jwt=llamas : echo vault-token" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar/testpipe : exit 0" \
+    "kv list -address=https://vault_svr_url -format=yaml foobar : exit 0" \
+    "kv get -address=https://vault_svr_url -field=data -format=json kv2/team/forbidden : echo 'permission denied' >&2; exit 2" \
+    "token revoke -address=https://vault_svr_url -self : test \"\$VAULT_TOKEN\" = vault-token"
+
+  run bash -c "$PWD/hooks/environment"
+  assert_failure
+  assert_output --partial 'Failed to fetch secret from kv2/team/forbidden'
+
+  run bash -c "$PWD/hooks/pre-exit"
+  assert_success
+  assert_output --partial 'Revoking the Vault token'
+  refute_output --partial 'Could not revoke'
+
+  unstub vault
+}
+
+@test "jwt auth fails when the Buildkite OIDC token request fails" {
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_PATH=foobar
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_SERVER=https://vault_svr_url
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_DUMP_ENV=false
+  export BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_METHOD=jwt
+  export BUILDKITE_PIPELINE_SLUG=testpipe
+  unset VAULT_JWT
+
+  stub buildkite-agent \
+    "oidc request-token --audience https://vault_svr_url --lifetime 300 : exit 1"
+
+  run bash -c "$PWD/hooks/environment"
+
+  assert_failure
+  assert_output --partial 'Failed to request a Buildkite OIDC token'
+
+  unstub buildkite-agent
+}
+
+@test "pre-exit keeps going when revoking the Vault token fails" {
+  export BUILDKITE_JOB_ID=job-3
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  printf '%s\n%s\n' https://vault_svr_url vault-token >"$TMPDIR/vault-secrets-plugin-job-3.token"
+
+  stub vault \
+    "token revoke -address=https://vault_svr_url -self : exit 2"
+
+  run bash -c "$PWD/hooks/pre-exit"
+
+  assert_success
+  assert_output --partial 'Could not revoke the Vault token'
+  assert_file_not_exists "$TMPDIR/vault-secrets-plugin-job-3.token"
+
+  unstub vault
+}
+
+@test "pre-exit leaves a Vault token the plugin did not mint alone" {
+  export BUILDKITE_JOB_ID=job-4
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  export VAULT_TOKEN=someone-elses-token
+
+  run bash -c "$PWD/hooks/pre-exit"
+
+  assert_success
+  refute_output --partial 'Revoking the Vault token'
 }

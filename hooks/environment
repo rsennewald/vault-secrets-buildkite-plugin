@@ -273,6 +273,7 @@ if [[ -n "$vault_server" ]] ; then
 
   echo "~~~ Authenticating to :vault: $vault_server" >&2;
   vault_auth "${vault_server:-}"
+  export VAULT_ADDR="$vault_server"
 
   # Validate authentication was successful (only in debug mode)
   if [[ "${DEBUG_MODE}" =~ ^(true|1)$ ]]; then

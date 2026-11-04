@@ -85,6 +85,28 @@ steps:
             jwt-env: "VAULT_JWT"
 ```
 
+Leave out `jwt-env` (and `VAULT_JWT`) to log in with the job's Buildkite OIDC token:
+
+```yml
+steps:
+  - command: ./run_build.sh
+    plugins:
+      - vault-secrets#v2.5.0:
+          server: "https://my-vault-server"
+          auth:
+            method: "jwt"
+            mount: "buildkite"
+            jwt-role: "my-team-ci"
+          secrets:
+            - path: kv2/my-team/db
+              fields:
+                - name: password
+                  env: DB_PASSWORD
+```
+
+After logging in, the plugin exports `VAULT_TOKEN` and `VAULT_ADDR` for the job, and the
+`pre-exit` hook revokes the token.
+
 ### Custom Secret Keys
 It is possible to download secrets from a custom secret key, by using the `secret` option on the plugin. Setting this option will tell the plugin to check the KV store for your secret (ex: `secret/buildkite/supersecret`).
 This secret should still follow the same conventions as the `env` and `environment` secrets.
@@ -423,6 +445,8 @@ The environment variable which holds the **secret-id** used to authenticate to V
 #### `jwt-env` (optional, string)
 
 The environment variable which contains the **JSON Web Token** used to authenticate to Vault. Defaults to `VAULT_JWT`
+
+If neither `jwt-env` nor `VAULT_JWT` is set, the plugin requests a Buildkite OIDC token (`buildkite-agent oidc request-token --audience <server> --lifetime 300`). Bind the Vault role to that token's claims (`pipeline_slug`, `build_branch`, `step_key`, ...) and set its `bound_audiences` to the server URL.
 
 #### `jwt-role` (optional, string)
 

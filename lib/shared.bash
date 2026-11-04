@@ -3,6 +3,11 @@ set -ueo pipefail
 
 [ -z "${TMPDIR:-}" ] && TMPDIR=${TMPDIR:-/tmp}
 
+# Holds the server and the token a jwt login minted, for pre-exit to revoke.
+plugin_token_file() {
+  echo "${TMPDIR}/vault-secrets-plugin-${BUILDKITE_JOB_ID:-local}.token"
+}
+
 assume_role_via_cert_auth() {
   local vault_sts_role="$1"
   local cert_path="$2"
@@ -190,10 +195,16 @@ vault_auth() {
 
     jwt)
         echo "--- performing JWT authentication"
-        if [ -z "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ENV:-}" ]; then
-          jwt_var="${VAULT_JWT?No JWT found}"
-        else
+        if [ -n "${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ENV:-}" ]; then
           jwt_var="${!BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ENV}"
+        elif [ -n "${VAULT_JWT:-}" ]; then
+          jwt_var="${VAULT_JWT}"
+        else
+          echo "Requesting a Buildkite OIDC token for audience ${server}" >&2
+          if ! jwt_var=$(buildkite-agent oidc request-token --audience "$server" --lifetime 300); then
+            echo "+++ Failed to request a Buildkite OIDC token" >&2
+            exit 1
+          fi
         fi
 
         if [[ -z "${jwt_var:-}" ]]; then
@@ -208,7 +219,7 @@ vault_auth() {
         fi
 
         local jwt_rc=0
-        VAULT_TOKEN=$(vault write -field=token "$jwt_path" \
+        VAULT_TOKEN=$(vault write -field=token -address="$server" "$jwt_path" \
           role="${BUILDKITE_PLUGIN_VAULT_SECRETS_AUTH_JWT_ROLE:-"buildkite"}" \
           jwt="${jwt_var:-}") || jwt_rc=$?
 
@@ -219,6 +230,8 @@ vault_auth() {
 
         export VAULT_TOKEN
         track_redacted_env "VAULT_TOKEN"
+        # A file, not env: the agent drops this hook's exports when the hook fails.
+        (umask 077 && printf '%s\n%s\n' "$server" "$VAULT_TOKEN" >"$(plugin_token_file)")
 
         echo "Successfully authenticated with JWT"
     ;;
