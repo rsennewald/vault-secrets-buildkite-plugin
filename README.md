@@ -29,7 +29,7 @@ export VAULT_SECRET_ID="$(vault read -field "secret_id" auth/approle/role/buildk
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -49,7 +49,7 @@ SUPER_SECRET_ID=$(vault read -field "secret_id" auth/approle/role/buildkite/secr
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -64,7 +64,7 @@ steps:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -77,7 +77,7 @@ steps:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -92,7 +92,7 @@ This secret should still follow the same conventions as the `env` and `environme
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           secret: supersecret
           path: secret/buildkite
@@ -132,7 +132,7 @@ This secret should still follow the same conventions as the `env` and `environme
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           secret: supersecret
           path: secret/buildkite
@@ -154,7 +154,7 @@ The keys in the `env` secret are exposed in the `checkout` and `command` as envi
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -169,7 +169,7 @@ steps:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -182,7 +182,7 @@ steps:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           path: secret/buildkite
           auth:
@@ -354,6 +354,23 @@ Expects one of the following values:
 
 Default: `yaml`
 
+### `max-retries` (optional, integer)
+Sets Vault's native [`VAULT_MAX_RETRIES`](https://developer.hashicorp.com/vault/docs/commands#vault_max_retries) for every Vault CLI call the plugin makes (login and secret reads). The Vault client retries requests that fail with a connection error (such as connection refused, for example when Vault or a local Vault Agent is briefly not listening) or a 5xx response, with its own backoff. Vault's default is `2`; set `0` to disable retries.
+
+If the variable is already set in the agent environment and this option is omitted, the agent value is used.
+
+```yml
+steps:
+  - command: ./run_build.sh
+    plugins:
+      - vault-secrets#v2.5.0:
+          server: "http://127.0.0.1:8200"
+          max-retries: 5
+          auth:
+            method: "approle"
+            role-id: "my-role-id"
+```
+
 ### `debug` (optional, boolean)
 Enable detailed debug logging to troubleshoot connection and authentication issues with Vault.
 
@@ -369,7 +386,7 @@ When enabled, the plugin will:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: "https://my-vault-server"
           debug: true
           auth:
@@ -417,7 +434,7 @@ Example:
 steps:
   - command: ./run_build.sh
     plugins:
-      - vault-secrets#v2.4.0:
+      - vault-secrets#v2.5.0:
           server: https://my-vault-server
           auth:
             method: 'approle'
